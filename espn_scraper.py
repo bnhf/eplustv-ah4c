@@ -26,7 +26,7 @@ TZN       = os.getenv("WATCH_API_TZ", DEFAULT_TZ)
 DEVICE    = os.getenv("WATCH_API_DEVICE", DEFAULT_DEVICE)
 VERIFYSSL = bool(int(os.getenv("WATCH_API_VERIFY_SSL", "1")))
 
-OUT_DB = os.getenv("WATCH_DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out", "espn_schedule.db")
+OUT_DB = os.getenv("WATCH_DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "espn_schedule.db")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -107,10 +107,18 @@ def ensure_db():
     with sqlite3.connect(OUT_DB) as db:
         db.execute("""CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
-            title TEXT,
             sport TEXT,
+            league TEXT,
+            title TEXT,
+            subtitle TEXT,
+            summary TEXT,
+            image TEXT,
             start_utc TEXT,
-            stop_utc TEXT
+            stop_utc TEXT,
+            status TEXT,
+            is_plus INTEGER DEFAULT 1,
+            web_url TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_utc)")
 
@@ -146,19 +154,35 @@ def parse_and_store(days):
                 # Filter for ESPN+ content - package name is "ESPN_PLUS" with underscore
                 if "ESPN_PLUS" not in pkgs:
                     continue
+                
+                # Extract all fields from API response
+                pid   = a.get("id") or a.get("airingId") or a.get("simulcastAiringId")
                 title = a.get("shortName") or a.get("name") or "Untitled"
                 sport = ((a.get("sport") or {}).get("name") or "").strip() or "sports"
+                league_obj = a.get("league") or {}
+                league = (league_obj.get("abbreviation") or league_obj.get("name") or "").strip()
+                network_obj = a.get("network") or {}
+                subtitle = (network_obj.get("shortName") or network_obj.get("name") or "").strip()
                 start = a.get("startDateTime")
                 stop  = a.get("endDateTime")
-                pid   = a.get("id") or a.get("airingId") or a.get("simulcastAiringId")
+                
                 if not (pid and start and stop): 
                     continue
+                
+                # Normalize datetime format to include Z
                 if start.endswith("Z"): s_iso = start
                 else: s_iso = start.replace("+00:00","Z")
                 if stop.endswith("Z"):  e_iso = stop
                 else: e_iso = stop.replace("+00:00","Z")
-                db.execute("""INSERT OR REPLACE INTO events(id,title,sport,start_utc,stop_utc)
-                              VALUES(?,?,?,?,?)""", (pid, title, sport, s_iso, e_iso))
+                
+                # Determine status (simplified - could be enhanced)
+                status = "UPCOMING"
+                
+                db.execute("""INSERT OR REPLACE INTO events(
+                    id, sport, league, title, subtitle, summary, image, 
+                    start_utc, stop_utc, status, is_plus, web_url
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", 
+                (pid, sport, league, title, subtitle, "", "", s_iso, e_iso, status, 1, ""))
                 total += 1
         db.execute("COMMIT")
     return total

@@ -35,11 +35,11 @@ def ensure_out_dir():
     """Create ./out/ if it doesn't exist."""
     os.makedirs(OUT_DIR, exist_ok=True)
 
-def get_live_and_upcoming_events(db_path, hours_ahead=6):
+def get_live_and_upcoming_events(db_path, hours_ahead=MAX_STANDBY_HOURS):
     """
     Get events that are either:
     - Live now (started but not ended)
-    - Starting within next N hours (default 6 to match MAX_STANDBY_HOURS)
+    - Starting within next N hours (default matches MAX_STANDBY_HOURS)
     - Ended recently (within 65 minutes) to show "EVENT ENDED" block across 2 hourly runs
     """
     conn = sqlite3.connect(db_path)
@@ -56,7 +56,7 @@ def get_live_and_upcoming_events(db_path, hours_ahead=6):
         SELECT * FROM events
         WHERE datetime(stop_utc, '+{grace_period_min} minutes') > datetime('now')
           AND datetime(start_utc) <= datetime('now', '+{hours_ahead} hours')
-        ORDER BY start_utc, title
+        ORDER BY start_utc, title, id
     """
     cursor = conn.execute(query)
     events = [dict(row) for row in cursor.fetchall()]
@@ -193,8 +193,8 @@ def generate_xmltv(events):
         is_upcoming = start_time > now
 
         # Pre-event standby placeholders
-        # Always add STAND BY blocks to ensure channels have content before events
-        # For live events, this adds retroactive blocks; for upcoming events, it adds future blocks
+        # Only adds STAND BY blocks for upcoming events (not yet started)
+        # Live events show just the event itself without retroactive standby blocks
         for block in generate_standby_blocks(channel_id, start_time, now):
             programme = ET.SubElement(tv, 'programme')
             programme.set('start', block['start'])
@@ -273,8 +273,8 @@ def main():
     print(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print()
 
-    print("Fetching live and upcoming events (next 6 hours)...")
-    events = get_live_and_upcoming_events(db_path, hours_ahead=6)
+    print(f"Fetching live and upcoming events (next {MAX_STANDBY_HOURS} hours)...")
+    events = get_live_and_upcoming_events(db_path)
 
     if not events:
         print("No live or upcoming events found!")
