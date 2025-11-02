@@ -92,12 +92,9 @@ def generate_m3u(events):
         deep_link = build_deep_link(play_id)
 
         title = event.get('title', 'Unknown Event')
-        sport = event.get('sport', '')
-        league = event.get('league', '')
-
-        channel_name = f"ESPN+ {channel_num}: {title}"
-        if league:
-            channel_name += f" ({league})"
+        
+        # Just use the event title for channel name
+        channel_name = title
 
         lines.append(f'#EXTINF:-1 tvg-id="espnplus{channel_num}" tvg-name="{channel_name}" tvg-logo="" group-title="ESPN+",{channel_name}')
         lines.append(deep_link)
@@ -179,8 +176,8 @@ def generate_xmltv(events):
 
         display_name = ET.SubElement(channel, 'display-name')
         title = event.get('title', 'Unknown Event')
-        league = event.get('league', '')
-        display_name.text = f"ESPN+ {idx}: {title}" + (f" ({league})" if league else "")
+        # Just use the event title - no channel number prefix
+        display_name.text = title
 
     # Programmes
     for idx, event in enumerate(events, 1):
