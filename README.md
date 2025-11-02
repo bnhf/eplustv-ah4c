@@ -14,7 +14,8 @@ sportscenter://x-callback-url/showWatchStream?playID=<UUID>
 - `generate_guide.py` — produces `out/espn_plus.xml` (XMLTV) and `out/espn_plus.m3u` (M3U)
 - `hourly.sh` — regenerate guide and ask Channels DVR to reload sources
 - `nightly_scrape.sh` — refresh the ESPN+ schedule DB nightly
-- Docs: `SUMMARY.md`, `QUICKSTART_GUIDE.md`, `GUIDE_GENERATOR_README.md`  
+- `serve_out.py` — **tiny HTTP server** to serve `out/` (XMLTV + M3U) on your LAN
+- Docs: `SUMMARY.md`, `QUICKSTART_GUIDE.md`, `GUIDE_GENERATOR_README.md`
   *(Baseline metrics, if present: `DEEPLINKS_BASELINE_AUDIT.md`)*
 
 ## Prerequisites
@@ -42,11 +43,11 @@ python3 generate_guide.py
 - **XMLTV**: `out/espn_plus.xml`
 - **M3U**: `out/espn_plus.m3u`
 
-**Defaults:** the scraper loads ~4 days ahead. The guide emits channels for events **live now** and those **starting within ~3 hours**, and keeps just-ended events in the set for **65 minutes** (the guide shows a 30-min “EVENT ENDED” tile after stop).
+**Defaults:** the scraper loads ~4 days ahead. The guide emits channels for events **live now** and those **starting within ~3 hours**, and keeps just-ended events in the set for **65 minutes** (the guide shows a 30‑min “EVENT ENDED” tile after stop).
 
 ## Automated Hourly Refresh (recommended)
 
-`hourly.sh` regenerates the guide and then tells Channels DVR to reload **M3U** and **XMLTV** (20-second pause between).
+`hourly.sh` regenerates the guide and then tells Channels DVR to reload **M3U** and **XMLTV** (20‑second pause between).
 
 **Defaults inside `hourly.sh`:**
 - `HOST`: `http://127.0.0.1:8089` (override to your Channels host)
@@ -64,7 +65,9 @@ Run hourly via cron (quotes + flock guard):
 ```bash
 APP_DIR="<ABSOLUTE_PATH_TO_CLONE>"
 mkdir -p "$APP_DIR/logs"
-( crontab -l 2>/dev/null | grep -v "$APP_DIR/hourly.sh" ;   echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' ;   echo '0 * * * * /usr/bin/flock -n /tmp/deeplinks_hourly.lock /bin/bash '"$APP_DIR"'/hourly.sh >> '"$APP_DIR"'/logs/hourly.log 2>&1' ) | crontab -
+( crontab -l 2>/dev/null | grep -v "$APP_DIR/hourly.sh" ; \
+  echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' ; \
+  echo '0 * * * * /usr/bin/flock -n /tmp/deeplinks_hourly.lock /bin/bash '"$APP_DIR"'/hourly.sh >> '"$APP_DIR"'/logs/hourly.log 2>&1' ) | crontab -
 ```
 
 ## Nightly DB Refresh
@@ -78,14 +81,94 @@ Cron at 3:30 AM:
 ```bash
 APP_DIR="<ABSOLUTE_PATH_TO_CLONE>"
 mkdir -p "$APP_DIR/logs"
-( crontab -l 2>/dev/null | grep -v "$APP_DIR/nightly_scrape.sh" ;   echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' ;   echo '30 3 * * * /usr/bin/flock -n /tmp/deeplinks_nightly.lock /bin/bash '"$APP_DIR"'/nightly_scrape.sh >> '"$APP_DIR"'/logs/nightly.log 2>&1' ) | crontab -
+( crontab -l 2>/dev/null | grep -v "$APP_DIR/nightly_scrape.sh" ; \
+  echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' ; \
+  echo '30 3 * * * /usr/bin/flock -n /tmp/deeplinks_nightly.lock /bin/bash '"$APP_DIR"'/nightly_scrape.sh >> '"$APP_DIR"'/logs/nightly.log 2>&1' ) | crontab -
 ```
+
+## Optional: Serve the `out/` folder over HTTP (for Channels DVR)
+
+If you prefer to point Channels (or a browser) at URLs instead of local paths, use the tiny server:
+
+```bash
+# random high port
+./serve_out.py
+
+# or pin to a port (e.g., 6967)
+./serve_out.py --port 6967
+```
+
+**URLs to use in Channels DVR**
+- **M3U**:  `http://<LAN-IP>:<PORT>/espn_plus.m3u`
+- **XMLTV**: `http://<LAN-IP>:<PORT>/espn_plus.xml`
+
+### Run as a background service (systemd)
+
+Create a systemd unit to run at boot:
+
+```bash
+sudo tee /etc/systemd/system/deeplinks-out.service >/dev/null <<'UNIT'
+[Unit]
+Description=DeepLinks HTTP Server for ./out
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/brad/Projects/DeepLinks
+ExecStart=/usr/bin/python3 /home/brad/Projects/DeepLinks/serve_out.py --port 6967
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now deeplinks-out.service
+systemctl status deeplinks-out.service --no-pager
+```
+
+**Change paths/port** as needed (e.g., different user or installation path).
+
+#### Manage the service
+```bash
+# view logs live
+journalctl -u deeplinks-out -f
+
+# restart / stop
+sudo systemctl restart deeplinks-out
+sudo systemctl stop deeplinks-out
+```
+
+#### User-mode alternative (no sudo)
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/deeplinks-out.service <<'UNIT'
+[Unit]
+Description=DeepLinks HTTP Server for ./out
+
+[Service]
+WorkingDirectory=%h/Projects/DeepLinks
+ExecStart=/usr/bin/python3 %h/Projects/DeepLinks/serve_out.py --port 6967
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+UNIT
+
+systemctl --user daemon-reload
+systemctl --user enable --now deeplinks-out.service
+systemctl --user status deeplinks-out.service --no-pager
+```
+
+View logs: `journalctl --user -u deeplinks-out -f`
 
 ## Conventions
 
 - Deep links: `sportscenter://x-callback-url/showWatchStream?playID=<UUID>`
 - All times stored as **UTC** in the DB; display/localization is up to your consumer
-- “Standby” filler is emitted in 30-min blocks up to ~6h before start (fixed for now)
+- “Standby” filler is emitted in 30‑min blocks up to ~6h before start (fixed for now)
 
 ## Roadmap (short)
 
