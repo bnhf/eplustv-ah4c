@@ -1,22 +1,14 @@
+# Runtime artifacts
+/out/*
+/logs/*
+
+# Keep these if you want example bundles visible:
+!/out/*.zip
+
+# Local backups
+*.bak.*
+*.old
+
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-.env
-.env.*
-
-# OS / editors
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Project artifacts (keep seed DB)
-out/*
-!out/espn_schedule.db
-
-# Logs and temp
-logs/
-*.log
-*.gz
+*.pyc
