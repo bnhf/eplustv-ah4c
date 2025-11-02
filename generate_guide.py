@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-#!/usr/bin/env python3
-# DeepLinks — ESPN+ M3U/XMLTV generator
+# DeepLinks - ESPN+ M3U/XMLTV generator
 # - Stable channel ids: dl-<event id>
 # - M3U skips ended events (XMLTV keeps 30m "EVENT ENDED" stubs for already-ended events)
 # - Include LIVE and next ~3 hours; keep events until 65 min after end
 # - Standby blocks: 30m tiles up to 6h ahead of start (skip <5m slivers)
 # - Channel display-name: <short event title>, then "ESPN+"
-# - FIX: Use julianday() on BOTH sides of time window comparisons
-# - NEW: ultra-short M3U names (<=8 chars) like "NYR-SEA" or "RIT@CLG"
+# - Uses julianday() on BOTH sides of time window comparisons
+# - Ultra-short M3U names (<=8 chars) like "NYR-SEA" or "RIT@CLG"
+# - NEW: XMLTV <desc> filled with TITLE - SPORT - LEAGUE - STATUS
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 import xml.etree.ElementTree as ET
 
 # --- Tunables ---------------------------------------------------------------
@@ -64,7 +64,7 @@ def shorten_title(s: str, max_len: int = 38) -> str:
         return s
     cut = s[: max_len + 1]
     cut = cut.rsplit(" ", 1)[0]
-    return (cut or s[:max_len]).rstrip() + "…"
+    return (cut or s[:max_len]).rstrip() + "..."
 
 def _jd_fmt(dt_: datetime) -> str:
     # SQLite-friendly UTC datetime: "YYYY-MM-DD HH:MM:SS+00:00"
@@ -78,7 +78,7 @@ _STOPWORDS = {
 }
 
 def team_code(name: str) -> str:
-    """Generate a compact 2–4 letter code from a team/school name."""
+    """Generate a compact 2-4 letter code from a team/school name."""
     s = re.sub(r'#\s*\d+\s*', ' ', name)      # drop rankings like #20
     s = re.sub(r'\(.*?\)', ' ', s)            # drop parenthetical
     s = re.sub(r'[^A-Za-z0-9\s]', ' ', s)     # keep alnum/space
@@ -118,11 +118,11 @@ def compact_matchup(title: str) -> str:
 class Event:
     id: str
     title: str
-    sport: str | None
-    league: str | None
+    sport: Optional[str]
+    league: Optional[str]
     start: datetime
     stop: datetime
-    status: str | None = None
+    status: Optional[str] = None
 
 # --- DB ---------------------------------------------------------------------
 
@@ -169,6 +169,29 @@ def load_events_for_window(
     # Deduplicate by id (belt & suspenders)
     return list({e.id: e for e in rows}.values())
 
+# --- XMLTV helpers ----------------------------------------------------------
+
+def format_desc(ev: Event) -> str:
+    """Build a rich description like: USC VS WASHINGTON - COLLEGE FOOTBALL - NCAAF - LIVE NOW"""
+    parts = []
+    if ev.title:
+        parts.append(ev.title.upper())
+    if ev.sport:
+        parts.append(ev.sport.upper())
+    if ev.league:
+        parts.append(ev.league.upper())
+    if ev.status:
+        parts.append(ev.status.upper())
+    # Join with " - " and cap length for safety
+    return (" - ".join(parts))[:1000] if parts else "ESPN+ EVENT"
+
+def add_desc(p: ET.Element, text: Optional[str]) -> None:
+    if not text:
+        return
+    d = ET.SubElement(p, "desc")
+    d.set("lang", "en")
+    d.text = re.sub(r"\s+", " ", text).strip()
+
 # --- XMLTV generation -------------------------------------------------------
 
 def emit_channel(tv: ET.Element, ev: Event) -> str:
@@ -190,6 +213,7 @@ def emit_programme(
     stop: datetime,
     title: str,
     categories: Iterable[str] = (),
+    desc: Optional[str] = None,
 ) -> None:
     p = ET.SubElement(
         tv,
@@ -199,6 +223,8 @@ def emit_programme(
     t = ET.SubElement(p, "title")
     t.set("lang", "en")
     t.text = title
+    if desc:
+        add_desc(p, desc)
     for c in categories:
         ce = ET.SubElement(p, "category")
         ce.set("lang", "en")
@@ -216,6 +242,7 @@ def generate_xmltv(events: List[Event], out_path: str) -> None:
     # Emit programmes per event channel
     for ev in events:
         chan = chan_ids[ev.id]
+        pretty_desc = format_desc(ev)
 
         # Standby tiles BEFORE start (only for upcoming)
         if ev.start > now:
@@ -229,7 +256,7 @@ def generate_xmltv(events: List[Event], out_path: str) -> None:
                     block_end = min(cursor + timedelta(minutes=STANDBY_TILE_MIN), ev.start)
                     # Skip micro-slivers <5m
                     if minutes_between(cursor, block_end) >= 5:
-                        emit_programme(tv, chan, cursor, block_end, "STAND BY")
+                        emit_programme(tv, chan, cursor, block_end, "STAND BY", (), pretty_desc)
                     cursor += timedelta(minutes=STANDBY_TILE_MIN)
 
         # The event itself
@@ -238,12 +265,12 @@ def generate_xmltv(events: List[Event], out_path: str) -> None:
             cats.append(ev.sport)
         if ev.league:
             cats.append(ev.league)
-        emit_programme(tv, chan, ev.start, ev.stop, ev.title, cats)
+        emit_programme(tv, chan, ev.start, ev.stop, ev.title, cats, pretty_desc)
 
         # Post tile only if already ended (visible stub)
         if ev.stop <= now + timedelta(minutes=1):
             end_stub = ev.stop + timedelta(minutes=EVENT_ENDED_DURATION_MIN)
-            emit_programme(tv, chan, ev.stop, end_stub, "EVENT ENDED")
+            emit_programme(tv, chan, ev.stop, end_stub, "EVENT ENDED", (), pretty_desc)
 
     # Pretty-print (Python 3.9+)
     try:
@@ -309,13 +336,13 @@ def summarize_run(events: List[Event]) -> None:
     print("Sample events:")
     print("------------------------------------------------------------")
     for i, ev in enumerate(events[:5], 1):
-        live = "🔴 LIVE - " if ev.start <= now_utc() <= ev.stop else ""
+        live = "LIVE - " if ev.start <= now_utc() <= ev.stop else ""
         print(f"{i}. {live}{ev.title}")
     if len(events) > 5:
         print(f"... and {len(events)-5} more\n")
 
     print("============================================================")
-    print("✓ Generation complete!\n")
+    print("Generation complete!\n")
     print("Files created:")
     print(f"  M3U:  {os.path.abspath(OUT_M3U)}")
     print(f"  XMLTV: {os.path.abspath(OUT_XML)}")
